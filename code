@@ -1,0 +1,610 @@
+import copy
+import numpy as np, matplotlib.pyplot as plt
+import scipy as sp
+import scipy.stats as sps
+from scipy.interpolate import CubicSpline
+import time
+
+#Difference between this and gibbs vr double samle is gettinggamma, way to find galaxies and sample to include our own galaxy
+c = 300000
+n= 18
+sigv=600/np.sqrt(3)
+sigpphi = 0.2098
+sigptheta = 0.2098
+pdfpoints = 100
+numsamples = 1000
+trueH0 = 70
+zmax = 0.046
+v0 = [25.8,246,271]
+clength = 50
+factor = 25
+
+
+def finding_galaxies(H0,zmax,v0,sigv,sigpphi,sigptheta,num):
+    total = 0
+    while total < num:
+        total = 0
+        length = 2 * (c * zmax) / H0
+        print('Lenght is', length)
+        number = factor * num + 1
+        poss = np.empty([number, 3])
+        rss = np.empty(number)
+        v0radss = np.empty(number - 1)
+        rhs = np.empty([3, number])
+        phs = np.empty([3, number])
+        ths = np.empty([3, number])
+        for i in range(factor * num):
+            x = length * np.random.uniform(low=-1, high=1)
+            y = length * np.random.uniform(low=-1, high=1)
+            z = length * np.random.uniform(low=-1, high=1)
+            r = np.sqrt(x ** 2 + y ** 2 + z ** 2)
+            rnoz = (np.sqrt(x ** 2 + y ** 2))
+            rhat = np.array([[x / r], [y / r], [z / r]])
+            phihat = [[-y / rnoz], [x / rnoz], [0]]
+            thetahat = np.cross(phihat, rhat, axis=0)
+            v0rad = np.dot(v0, rhat)
+            poss[i, :] = [x, y, z]
+            rhs[:, i] = np.ravel(rhat)
+            phs[:, i] = np.ravel(phihat)
+            ths[:, i] = np.ravel(thetahat)
+            rss[i] = r
+            v0radss[i] = v0rad
+        poss[-1] = [0.01, 0, 0]
+        rus = 0.01
+        rhus = np.array([[0.01 / rus], [0 / rus], [0 / rus]])
+        phus = np.array([[0 / rus], [0.01 / rus], [0 / rus]])
+        thus = np.cross(phus, rhus, axis=0)
+        rhs[:, -1] = np.ravel(rhus)
+        phs[:, -1] = np.ravel(phus)
+        ths[:, -1] = np.ravel(thus)
+        hats = np.empty(3 * number, dtype=object)
+        l = 0
+        for i in range(0, 3 * number, 3):
+            hats[i] = rhs[:, l]
+            hats[i + 2] = ths[:, l]
+            hats[i + 1] = phs[:, l]
+            l = l + 1
+        print('getting gama')
+        gama = gettinggamma(number, poss, hats, sigv, clength)
+        print('got gama')
+        nn = np.delete(gama, -1, 0)
+        nn = np.delete(nn, -1, 1)
+        nn = np.delete(nn, -1, 0)
+        nn = np.delete(nn, -1, 1)
+        nn = np.delete(nn, -1, 0)
+        nn = np.delete(nn, -1, 1)
+        on = gama[-3:, :]
+        no = gama[:, -3:]
+        no = np.delete(no, -1, 0)
+        no = np.delete(no, -1, 0)
+        no = np.delete(no, -1, 0)
+        oo = gama[-3:, -3:]
+        on = np.delete(on, -1, 1)
+        on = np.delete(on, -1, 1)
+        on = np.delete(on, -1, 1)
+        inv = np.linalg.inv(oo)
+        mew = np.dot(no, inv)
+        mew = np.dot(mew, np.ravel(v0))
+        gc = np.dot(no, inv)
+        gc = np.dot(gc, on)
+        gc = nn - gc
+        l = np.linalg.cholesky(gc)
+        points = np.empty(len(gc))
+        for i in range(len(points)):
+            points[i] = np.random.normal()
+        points = points.reshape(-1, 1)
+
+        npts = mew + np.dot(l, np.ravel(points))
+
+        vrss = np.empty(factor * num)
+        vpss = np.empty(factor * num)
+        vtss = np.empty(factor * num)
+
+        galaxie_pos = np.empty([num + 1, 3])
+        galaxy_vels = np.empty([num + 1, 3])
+        relative_vels = np.empty([num + 1, 3])
+        proper_motions = np.empty([num + 1, 2])
+        rshifts = np.empty([num + 1])
+        rhats = np.empty([3, num + 1])
+        phihats = np.empty([3, num + 1])
+        thetahats = np.empty([3, num + 1])
+        true_motions = np.empty([num + 1, 2])
+        temp = 0
+        for i in range(0, len(npts), 3):
+            vrss[temp] = npts[i]
+            vpss[temp] = npts[i + 1]
+            vtss[temp] = npts[i + 2]
+            temp = temp + 1
+        print('starting to sample')
+        for i in range(len(vrss)):
+            zshift = ((H0 * rss[i] + vrss[i] - v0radss[i]) / c)
+            if zshift <= zmax:
+                v0phi = np.dot(v0, phs[:, i])
+                v0theta = np.dot(v0, ths[:, i])
+                pphitrue = (vpss[i] - v0phi) / rss[i]
+                pphi = pphitrue + np.random.normal(scale=sigpphi)
+                pthetatrue = (vtss[i] - v0theta) / rss[i]
+                ptheta = pthetatrue + np.random.normal(scale=sigptheta)
+                galaxie_pos[total, :] = poss[i, :]
+                galaxy_vels[total, :] = [vrss[i], vpss[i], vtss[i]]
+                rshifts[total] = zshift
+                rhats[:, total] = np.ravel(rhs[:, i])
+                phihats[:, total] = np.ravel(phs[:, i])
+                thetahats[:, total] = np.ravel(ths[:, i])
+                true_motions[total, :] = [pphitrue, pthetatrue]
+                proper_motions[total, :] = [pphi, ptheta]
+                relative_vels[total, :] = [v0radss[i], v0phi, v0theta]
+                total = total + 1
+                if total == num:
+                    galaxie_pos[-1] = [0.01, 0, 0]
+                    rus = 0.01
+                    rhus = np.array([[0.01 / rus], [0 / rus], [0 / rus]])
+                    phus = np.array([[0 / rus], [0.01 / rus], [0 / rus]])
+                    thus = np.cross(phus, rhus, axis=0)
+                    rhats[:, -1] = np.ravel(rhus)
+                    phihats[:, -1] = np.ravel(phus)
+                    thetahats[:, -1] = np.ravel(thus)
+                    vrus = np.dot(v0, rhus)
+                    vpus = np.dot(v0, phus)
+                    vtus = np.dot(v0, thus)
+                    galaxy_vels[-1, :] = [vrus, vpus, vtus]
+                    true_motions[-1, :] = [0, 0]
+                    proper_motions[-1, :] = [0, 0]
+                    relative_vels[-1, :] = [0, 0, 0]
+                    rshifts[-1] = -1000000 #set to a very large negative value as it should never be used but if it is it will be spoted easily
+                    break
+
+        if total < num:
+            print('failed')
+
+    return galaxie_pos, rhats, phihats, thetahats, galaxy_vels, rshifts, proper_motions, relative_vels, true_motions
+
+def gettinggamma(numgalaxies,pos,hats,sigmav,clength):
+    gamma = np.empty([3 * numgalaxies, 3 * numgalaxies])
+
+    for j in range(numgalaxies):
+        for k in range(numgalaxies):
+            p = pos[j, :] - pos[k, :]
+            top = np.sum((p) ** 2)
+            exp = (top) / (2 * clength ** 2)
+            for j2 in range(3):
+                for k2 in range(3):
+                    parenthesis = np.dot(hats[3 * j + j2], hats[3 * k + k2]) - (
+                                np.dot(p, hats[3 * k + k2]) * (np.dot(p, hats[3 * j + j2]))) / clength ** 2
+                    gamma[3 * j + j2][3 * k + k2] = sigmav ** 2 * parenthesis * np.exp(-exp)
+                    gamma[3 * k + k2][3 * j + j2] = gamma[3 * j + j2][3 * k + k2]
+
+    a = np.zeros((len(gamma), len(gamma)), int)
+    np.fill_diagonal(a, (sigmav ** 2) * .2)
+
+    gamma = gamma + a
+
+    return gamma
+
+def updatinggamma(gama,hats,pos,sigmav,clength,j):
+    ii = 0
+    for i in  range(len(gama)):
+        p = pos[j,:] - pos[int(ii/3),:]
+        par1 = np.dot(hats[3*j],hats[i]) - (np.dot(p,hats[i])*(np.dot(p,hats[3*j])))/clength**2
+        par3 = np.dot(hats[3 * j +1], hats[i]) - (np.dot(p, hats[i]) * (np.dot(p, hats[3 * j+1]))) / clength ** 2
+        par5 = np.dot(hats[3 * j + 2], hats[i]) - (np.dot(p, hats[i]) * (np.dot(p, hats[3 * j + 2]))) / clength ** 2
+        top = np.sum((pos[j,:] - pos[int(ii/3),:])**2)
+        exp = (top)/(2*clength**2)
+        gama[3*j][i] = sigmav ** 2 * par1 * np.exp(-exp)
+        gama[i][3*j] = sigmav ** 2 * par1 * np.exp(-exp)
+        gama[3*j+1][i] = sigmav ** 2 * par3 * np.exp(-exp)
+        gama[i][3*j+1] = sigmav ** 2 * par3 * np.exp(-exp)
+        gama[3*j + 2][i] = sigmav ** 2 * par5 * np.exp(-exp)
+        gama[i][3*j + 2] = sigmav ** 2 * par5 * np.exp(-exp)
+        ii=ii+1
+
+    gama[3*j][3*j] = gama[3*j][3*j] + (sigmav**2)*.2
+    gama[3 * j +1][3 * j +1] = gama[3 * j +1][3 * j +1] + (sigmav ** 2) * .2
+    gama[3 * j +2][3 * j +2] = gama[3 * j +2][3 * j +2] + (sigmav ** 2) * .2
+
+
+    return gama
+
+def updatinginverse(gamainv,vs,j):
+    rows = np.dot(vs, gamainv)
+    parenthesis = (np.eye(3) + np.dot(vs, gamainv[:, 3*j:3 * j + 3]))
+    parinv = np.linalg.inv(parenthesis)
+    left = np.dot(gamainv[:, 3*j:3 * j + 3], parinv)
+    mat = np.dot(left, rows)
+    new = gamainv - mat
+    cols = np.dot(new, vs.T)
+    parentesis2 = (np.eye(3) + np.dot(new[3*j:3 * j + 3, :], vs.T))
+    parinv2 = np.linalg.inv(parentesis2)
+    left2 = np.dot(cols, parinv2)
+    mat2 = np.dot(left2, new[3*j:3 * j + 3, :])
+    new2 = new - mat2
+
+    return new2
+
+def getgammaconditional(gama):
+    nn = np.delete(gama, -1, 0)
+    nn = np.delete(nn, -1, 1)
+    nn = np.delete(nn, -1, 0)
+    nn = np.delete(nn, -1, 1)
+    nn = np.delete(nn, -1, 0)
+    nn = np.delete(nn, -1, 1)
+    on = gama[-3:, :]
+    no = gama[:, -3:]
+    no = np.delete(no, -1, 0)
+    no = np.delete(no, -1, 0)
+    no = np.delete(no, -1, 0)
+    oo = gama[-3:, -3:]
+    on = np.delete(on, -1, 1)
+    on = np.delete(on, -1, 1)
+    on = np.delete(on, -1, 1)
+    inv = np.linalg.inv(oo)
+    gc = np.dot(no, inv)
+    gc = np.dot(gc, on)
+    gc = nn - gc
+
+    return gc
+
+def find_H0(z,pphi,ptheta,v0rad,v0phi,v0theta,vrad,vphi,vtheta,sigptheta,sigpphi,num):
+    H0 = np.linspace(1, 150, num)
+    lp=0
+
+    for i in range(len(z)-1):
+        topp = pphi[i] - H0 * ((vphi[i] - v0phi[i]) / (z[i] * c + v0rad[i] - vrad[i]))
+        topt = ptheta[i] - H0 * ((vtheta[i] - v0theta[i]) / (z[i] * c + v0rad[i] - vrad[i]))
+        lmda = (topp ** 2 / sigpphi ** 2) + (topt ** 2 / sigptheta ** 2)
+        ppost = np.log(((z[i] * c + v0rad[i] - vrad[i]) ** 2)) -((1 / 2) * (lmda))
+        lp = lp + ppost
+    lp = lp - ((1/2) * ((H0 -70)**2)/((20)**2))
+    lp = lp-np.max(lp)
+    pdf = np.exp(lp)
+    temp = np.sum(pdf * (H0[1] - H0[0]))
+    pdf_norm = pdf / temp
+
+
+    return H0,pdf_norm
+
+def find_vradial(z,pphi,ptheta,v0rad,v0phi,v0theta,vels,vphi,vtheta,H0,sigptheta,sigpphi,gmainv,j):
+    # vrad,vphi,vtheta need to be arrays, everything else needs to be one int
+    flow = False
+    fhigh = False
+    vrng = np.linspace(-1500, 1500, 40)
+
+    chi = np.empty(len(vrng), dtype=object)
+    for i in range(len(vrng)):
+        vels[3 * j] = vrng[i]
+        tmp = np.dot(vels, gmainv)
+        chi[i] = np.dot(tmp, vels)
+
+    lp = 0
+    topp = pphi - H0 * ((vphi[j] - v0phi) / (z * c + v0rad - vrng))
+    topt = ptheta - H0 * ((vtheta[j] - v0theta) / (z * c + v0rad - vrng))
+    lmda = (topp ** 2 / sigpphi ** 2) + (topt ** 2 / sigptheta ** 2)
+    lp = lp + np.log((z * c + v0rad - vrng) ** 2) - (1 / 2) * (lmda + chi)
+    val = max(lp) + np.log(10 ** (-3))
+    s = 0
+    while not flow:
+        if s >= len(vrng)/2:
+            low = int(vrng[5])
+            s = int(len(vrng)/2)
+            break
+        if val <= lp[s]:
+            low = int(vrng[s + 1])
+            flow = True
+        s = s + 1
+
+    while not fhigh:
+        if s == len(vrng):
+            high = vrng[s-1]
+            break
+        if val >= lp[s]:
+            high = int(vrng[s])
+            fhigh = True
+        s = s + 1
+    # lp = lp - np.max(lp)
+    gap = vrng[1] - vrng[0]
+    if high == low:
+        if (s+5) >= len(vrng):
+            s = s-8
+        low = vrng[s - 5]
+        high = vrng[s + 5]
+    numpts = int((high - low) / gap) * 3
+    if numpts > 0:
+        vrng = np.linspace(low, high, numpts)
+        chi = np.empty(len(vrng), dtype=object)
+        for i in range(len(vrng)):
+            vels[3 * j] = vrng[i]
+            tmp = np.dot(vels, gmainv)
+            chi[i] = np.dot(tmp, vels)
+        lp = 0
+        topp = pphi - H0 * ((vphi[j] - v0phi) / (z * c + v0rad - vrng))
+        topt = ptheta - H0 * ((vtheta[j] - v0theta) / (z * c + v0rad - vrng))
+        lmda = (topp ** 2 / sigpphi ** 2) + (topt ** 2 / sigptheta ** 2)
+        lp = lp + np.log((z * c + v0rad - vrng) ** 2) - (1 / 2) * (lmda + chi)
+    lp = lp - max(lp)
+    lp = lp.astype(float)
+
+    ppost = np.exp(lp)
+    if max(ppost)==0:
+        print('ppost contains all zeros',flush=True)
+        print(lp,flush=True)
+
+    # filtered = list(filter(lambda x: x > val, ppost))
+
+    temp = np.sum(ppost * (vrng[1] - vrng[0]))
+    ppost_norm = ppost / temp
+
+    return vrng, ppost_norm
+
+def find_thetasandphis(pos,z,pphi,ptheta,v0phi,v0theta,sigptheta,sigpphi,gma):
+    i = 0
+    gama = gma
+    while i < len(gama):
+        gama = np.delete(gama, i, 0)
+        gama = np.delete(gama, i, 1)
+        i = i + 2
+    ainv = np.zeros([len(gama), len(gama)])
+    a = np.zeros([len(gama), len(gama)])
+    r = np.empty(len(z))
+
+    for i in range(len(r)):
+        r[i] = np.sqrt(np.sum(pos[i, :] ** 2))
+    jj = 0
+    for j in range(0, len(ainv), 2):
+        a[j][j] = 1 / ((r[jj] * sigptheta) ** 2)
+        a[j + 1][j + 1] = 1 / ((r[jj] * sigpphi) ** 2)
+        ainv[j][j] = ((r[jj] * sigptheta) ** 2)
+        ainv[j + 1][j + 1] = ((r[jj] * sigpphi) ** 2)
+        jj = jj + 1
+
+    ctheta = v0theta + ptheta * r
+    cphi = v0phi + pphi * r
+
+    cs = np.empty(2 * (len(z)-1))
+
+    s = 0
+    for i in range(0, len(cs), 2):
+        cs[i+1] = ctheta[s]
+        cs[i] = cphi[s]
+        s = s + 1
+    points = np.empty(len(gama))
+    for i in range(len(points)):
+        points[i] = np.random.normal()
+    points = points.reshape(-1, 1)
+
+    parenthesis = ainv + gama
+    pinv = np.linalg.inv(parenthesis)
+    temp = np.dot(ainv, pinv)
+    m = ainv - np.dot(temp, ainv)
+    L = np.linalg.cholesky(m)
+    u = np.dot(a, cs)
+    u = np.dot(m, u)
+
+    npts = u + np.dot(L, np.ravel(points))
+
+    return npts
+
+def get_cdf(x,pdf,num):
+    try:
+        cs = CubicSpline(x, pdf)
+    except Exception as e:
+        print(e)
+        plt.figure()
+        plt.plot(x,pdf)
+        print(pdf)
+        plt.show()
+    csi=cs.antiderivative()
+    Fofx = np.array([csi(x[j]) for j in range(num)])
+
+    return Fofx
+
+def inverse_sample(x,cdf):
+    val = np.random.uniform()
+    f = min(range(len(cdf)), key=lambda i: abs(cdf[i] - val))
+    return x[f]
+
+def sampling(numgals,pos,z,pphi,ptheta,v0rad,v0phi,v0theta,vrad,vphi,vtheta,sigptheta,sigpphi,sigv,rhat,hats,pdfpts,numsamples):
+    numgals = numgals +1
+    pos2 = copy.deepcopy(pos)
+    H0s = np.empty(numsamples)
+    vrs = np.empty([numsamples, numgals])
+    vps = np.empty([numsamples, numgals])
+    vts = np.empty([numsamples, numgals])
+    poss = np.empty([numsamples,numgals,3])
+
+    gama = gettinggamma(numgals, pos2, hats, sigv, clength)
+    gamainv = np.linalg.inv(gama)
+    vels = np.empty(3 * len(vrad))
+    m = 0
+
+    for i in range(0, len(vels), 3):
+        vels[i] = vrad[m]
+        vels[i + 1] = vphi[m]
+        vels[i + 2] = vtheta[m]
+        m = m + 1
+    samps = 0
+    for i in range(numsamples):
+        print('sample',i)
+        h0rng,h0pdf=find_H0(z,pphi, ptheta,v0rad,v0phi,v0theta,vrad,vphi,vtheta,sigptheta,sigpphi,pdfpts)
+        '''if samps <=5:
+            plt.figure()
+            plt.plot(h0rng,h0pdf)
+            plt.show()
+            samps = samps +1'''
+        cdfh0=get_cdf(h0rng,h0pdf,pdfpts)
+        newH0 = inverse_sample(h0rng,cdfh0)
+        H0s[i] = newH0
+
+
+        for j in range(numgals-1):
+            vrrng,vrpdf = find_vradial(z[j],pphi[j],ptheta[j],v0rad[j],v0phi[j],v0theta[j],vels,vphi,vtheta,newH0,sigptheta,sigpphi,gamainv,j)
+            vrcdf = get_cdf(vrrng,vrpdf,int(len(vrpdf)))
+            nvr = inverse_sample(vrrng,vrcdf)
+            nr = (c*z[j]+v0rad[j]-nvr)/newH0
+            x,y,zpos = np.dot(nr,np.ravel(rhat[:,j]))
+            pos2[j,:] = x,y,zpos
+            vrad[j] = nvr
+            temp = gama[3*j:3*j+3,:]
+            gama= updatinggamma(gama, hats,pos2, sigv, clength,j)
+            #gama = gettinggamma(numgals, pos2, hats, sigv, clength)
+            temp2 = gama[3*j:3*j+3,:]
+            vss = temp2-temp
+            gamainv = updatinginverse(gamainv,vss,j)
+            #gamainv = np.linalg.inv(gama)
+            vels[3*j] = nvr
+            poss[i, j, :] =pos2[j,:]
+        gc = getgammaconditional(gama)
+        npts = find_thetasandphis(pos2,z,pphi,ptheta,v0phi,v0theta,sigptheta,sigpphi,gc)
+
+        m=0
+
+        temp = vels.copy()
+        for k in range(0,len(npts),2):
+            vels[3*m +1] =npts[k]
+            vels[3*m+2] = npts[k+1]
+            vtheta[m] =  npts[k+1]
+            vphi[m] = npts[k]
+            m=m+1
+
+        if vels[len(vels)-4]==temp[len(temp)-4]:
+            print('not working')
+        vrs[i, :] = vrad
+        vts[i, :] = vtheta
+        vps[i, :] = vphi
+
+
+
+    return H0s,vrs,vps,vts,gama,poss
+
+'''def automating(numgals,initialsig,H0,zmax,v0,sigv):
+    lessthan = False
+    greaterthan = False
+    sigmap = initialsig.copy()
+    deviations5 = []
+    sigmas5 =[]
+    deviations9 = []
+    sigmas9 = []
+
+    while not lessthan:
+        pos, rhats, phihats, thetahats, vs, zs, properms, v0s, trueps = finding_galaxies(H0, zmax, v0, sigv,
+                                                                                         sigmap, sigmap, numgals)
+        vrads = vs[:, 0]
+        vphis = vs[:, 1]
+        vthetas = vs[:, 2]
+        pphis = properms[:, 0]
+        pthetas = properms[:, 1]
+        v0rads = v0s[:, 0]
+        v0phis = v0s[:, 1]
+        v0thetas = v0s[:, 2]
+
+        hats = np.empty(3 * len(zs), dtype=object)
+        l = 0
+        for i in range(0, len(hats), 3):
+            hats[i] = rhats[:, l]
+            hats[i + 2] = thetahats[:, l]
+            hats[i + 1] = phihats[:, l]
+            l = l + 1
+        H0s, vrs, vps, vts, gama, posst = sampling(n, pos, zs, pphis, pthetas, v0rads, v0phis, v0thetas, vrads,
+                                                            vphis, vthetas, sigptheta, sigpphi, sigv, rhats, hats,
+                                                            pdfpoints, numsamples)
+
+        sigmas5.append[sigmap]
+        deviations5.append[np.std(H0s)]
+        if np.std(H0s) > 5:
+            sigmap = sigmap*.8
+
+        if np.std(H0s) < 5:
+            lessthan = True
+
+    while not greaterthan:
+        pos, rhats, phihats, thetahats, vs, zs, properms, v0s, trueps = finding_galaxies(H0, zmax, v0, sigv,
+                                                                                         sigmap, sigmap, numgals)
+        vrads = vs[:, 0]
+        vphis = vs[:, 1]
+        vthetas = vs[:, 2]
+        pphis = properms[:, 0]
+        pthetas = properms[:, 1]
+        v0rads = v0s[:, 0]
+        v0phis = v0s[:, 1]
+        v0thetas = v0s[:, 2]
+
+        hats = np.empty(3 * len(zs), dtype=object)
+        l = 0
+        for i in range(0, len(hats), 3):
+            hats[i] = rhats[:, l]
+            hats[i + 2] = thetahats[:, l]
+            hats[i + 1] = phihats[:, l]
+            l = l + 1
+        H0s, vrs, vps, vts, gama, posst = sampling(n, pos, zs, pphis, pthetas, v0rads, v0phis, v0thetas, vrads,
+                                                            vphis, vthetas, sigptheta, sigpphi, sigv, rhats, hats,
+                                                            pdfpoints, numsamples)
+
+        sigmas9.append[sigmap]
+        deviations9.append[np.std(H0s)]
+        if np.std(H0s) < 9:
+            sigmap = sigmap + sigmap * .2
+
+        if np.std(H0s) > 9:
+            greaterthan = True
+    return'''
+
+
+
+
+
+
+
+
+
+#pos,rhats,phihats,thetahats,vs,zs,properms,v0s,trueps = finding_galaxies(trueH0,zmax,v0,sigv,sigpphi,sigptheta,n)
+#np.savez('bad',pos=pos,rhat=rhats,phihat=phihats,thetahat=thetahats,galaxy_vels=vs,redshift=zs,ps = properms,rel_vels=v0s, tr = trueps)
+data = np.load('bad.npz')
+vs = data['galaxy_vels']
+properms = data['ps']
+v0s= data['rel_vels']
+pos=data['pos']
+rhats=data['rhat']
+phihats=data['phihat']
+thetahats=data['thetahat']
+zs=data['redshift']
+vrads = vs[:,0]
+vphis = vs[:,1]
+vthetas = vs[:,2]
+pphis = properms[:,0]
+pthetas = properms[:,1]
+v0rads = v0s[:,0]
+v0phis = v0s[:,1]
+v0thetas = v0s[:,2]
+
+hats = np.empty(3* len(zs),dtype=object)
+l = 0
+for i in range(0, len(hats), 3):
+    hats[i] = rhats[:,l]
+    hats[i + 2] = thetahats[:,l]
+    hats[i + 1] = phihats[:,l]
+    l = l + 1
+
+start = time.time()
+#gama = gettinggamma(n,pos,hats,sigv,clength)
+#rng,pdf = find_H0(zs,pphis,pthetas,v0rads,v0phis,v0thetas,vrads,vphis,vthetas,sigptheta,sigpphi,pdfpoints)
+#np.savez('10',pos=pos,rhat=rhats,phihat=phihats,thetahat=thetahats,galaxy_vels=vs,redshift=zs,ps = properms,rel_vels=v0s, tr = trueps)
+H0s,vrs,vps,vts,gama,posst = sampling(n,pos,zs,pphis,pthetas,v0rads,v0phis,v0thetas,vrads,vphis,vthetas,sigptheta,sigpphi,sigv,rhats,hats,pdfpoints,numsamples)
+end=time.time()
+
+#np.savez('baddata',H0s = H0s,vrs=vrs,vps=vps,vts=vts,posst = posst,gama=gama)
+
+print('num galaxies', n)
+print('sigma p', sigpphi)
+print('num of samples', numsamples)
+print('covariance length', clength)
+print('total time', end-start)
+print('time per galaxy', (end-start)/n)
+print('time per sample', (end-start)/numsamples)
+print('time per galaxy per sample', (end-start)/n/numsamples)
+
+
+
+
+
+
+
+
